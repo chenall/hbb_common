@@ -75,6 +75,7 @@ lazy_static::lazy_static! {
         let mut map = HashMap::new();
         let password = option_env!("PASSWORD").unwrap_or("RustDesk@Pwd123".into());
         map.insert("password".to_string(), password.to_string());
+        map.insert("direct-server".to_string(),"Y".to_string());
         RwLock::new(map)
     };
 
