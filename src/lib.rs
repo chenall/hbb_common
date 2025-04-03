@@ -422,8 +422,14 @@ pub struct VersionCheckResponse {
 pub const VER_TYPE_RUSTDESK_CLIENT: &str = "rustdesk-client";
 pub const VER_TYPE_RUSTDESK_SERVER: &str = "rustdesk-server";
 
+lazy_static::lazy_static! {
+    pub static ref URL: String = {
+        let api_server = option_env!("API_SERVER").unwrap_or("api.rustdesk.com".into());
+        format!("https://{}/version/latest", api_server)
+    };
+}
+
 pub fn version_check_request(typ: String) -> (VersionCheckRequest, String) {
-    const URL: &str = "https://api.rustdesk.com/version/latest";
 
     use sysinfo::System;
     let system = System::new();
