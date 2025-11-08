@@ -86,6 +86,11 @@ lazy_static::lazy_static! {
     pub static ref BUILTIN_SETTINGS: RwLock<HashMap<String, String>> = Default::default();
 }
 
+#[cfg(target_os = "android")]
+lazy_static::lazy_static! {
+    pub static ref ANDROID_RUSTLS_PLATFORM_VERIFIER_INITIALIZED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+}
+
 lazy_static::lazy_static! {
     pub static ref APP_DIR: RwLock<String> = Default::default();
 }
@@ -260,13 +265,18 @@ pub struct PeerConfig {
         skip_serializing_if = "String::is_empty"
     )]
     pub view_style: String,
-    // Image scroll style, scrollbar or scroll auto
+    // Image scroll style, scrolledge, scrollbar or scroll auto
     #[serde(
         default = "PeerConfig::default_scroll_style",
         deserialize_with = "PeerConfig::deserialize_scroll_style",
         skip_serializing_if = "String::is_empty"
     )]
     pub scroll_style: String,
+    #[serde(
+        default = "PeerConfig::default_edge_scroll_edge_thickness",
+        deserialize_with = "PeerConfig::deserialize_edge_scroll_edge_thickness"
+    )]
+    pub edge_scroll_edge_thickness: i32,
     #[serde(
         default = "PeerConfig::default_image_quality",
         deserialize_with = "PeerConfig::deserialize_image_quality",
@@ -313,6 +323,8 @@ pub struct PeerConfig {
     pub keyboard_mode: String,
     #[serde(flatten)]
     pub view_only: ViewOnly,
+    #[serde(flatten)]
+    pub show_my_cursor: ShowMyCursor,
     #[serde(flatten)]
     pub sync_init_clipboard: SyncInitClipboard,
     // Mouse wheel or touchpad scroll mode
@@ -373,6 +385,7 @@ impl Default for PeerConfig {
             size_pf: Default::default(),
             view_style: Self::default_view_style(),
             scroll_style: Self::default_scroll_style(),
+            edge_scroll_edge_thickness: Self::default_edge_scroll_edge_thickness(),
             image_quality: Self::default_image_quality(),
             custom_image_quality: Self::default_custom_image_quality(),
             show_remote_cursor: Default::default(),
@@ -390,6 +403,7 @@ impl Default for PeerConfig {
             follow_remote_window: Default::default(),
             keyboard_mode: Default::default(),
             view_only: Default::default(),
+            show_my_cursor: Default::default(),
             reverse_mouse_wheel: Self::default_reverse_mouse_wheel(),
             displays_as_individual_windows: Self::default_displays_as_individual_windows(),
             use_all_my_displays_for_the_remote_session:
@@ -1039,6 +1053,10 @@ impl Config {
 
     pub fn set_option(k: String, v: String) {
         if !is_option_can_save(&OVERWRITE_SETTINGS, &k, &DEFAULT_SETTINGS, &v) {
+            let mut config = CONFIG2.write().unwrap();
+            if config.options.remove(&k).is_some() {
+                config.store();
+            }
             return;
         }
         let mut config = CONFIG2.write().unwrap();
@@ -1588,11 +1606,10 @@ impl PeerConfig {
 
     fn default_options() -> HashMap<String, String> {
         let mut mp: HashMap<String, String> = Default::default();
-        [
+        let _ = [
             keys::OPTION_CODEC_PREFERENCE,
             keys::OPTION_CUSTOM_FPS,
             keys::OPTION_ZOOM_CURSOR,
-            keys::OPTION_TOUCH_MODE,
             keys::OPTION_I444,
             keys::OPTION_SWAP_LEFT_RIGHT_MOUSE,
             keys::OPTION_COLLAPSE_TOOLBAR,
@@ -1618,6 +1635,24 @@ impl PeerConfig {
             Ok(v)
         } else {
             Ok(Self::default_trackpad_speed())
+        }
+    }
+
+    fn default_edge_scroll_edge_thickness() -> i32 {
+        UserDefaultConfig::read(keys::OPTION_EDGE_SCROLL_EDGE_THICKNESS)
+            .parse()
+            .unwrap_or(100)
+    }
+
+    fn deserialize_edge_scroll_edge_thickness<'de, D>(deserializer: D) -> Result<i32, D::Error>
+    where
+        D: de::Deserializer<'de>,
+    {
+        let v: i32 = de::Deserialize::deserialize(deserializer)?;
+        if v >= 20 && v <= 150 {
+            Ok(v)
+        } else {
+            Ok(Self::default_edge_scroll_edge_thickness())
         }
     }
 }
@@ -1696,6 +1731,13 @@ serde_field_bool!(
     "view_only",
     default_view_only,
     "ViewOnly::default_view_only"
+);
+
+serde_field_bool!(
+    ShowMyCursor,
+    "show_my_cursor",
+    default_show_my_cursor,
+    "ShowMyCursor::default_show_my_cursor"
 );
 
 serde_field_bool!(
@@ -1808,6 +1850,10 @@ impl LocalConfig {
 
     pub fn set_option(k: String, v: String) {
         if !is_option_can_save(&OVERWRITE_LOCAL_SETTINGS, &k, &DEFAULT_LOCAL_SETTINGS, &v) {
+            let mut config = LOCAL_CONFIG.write().unwrap();
+            if config.options.remove(&k).is_some() {
+                config.store();
+            }
             return;
         }
         let mut config = LOCAL_CONFIG.write().unwrap();
@@ -1943,7 +1989,9 @@ impl UserDefaultConfig {
             keys::OPTION_VIEW_STYLE => self.get_string(key, "adaptive", vec!["original"]),
             #[cfg(not(any(target_os = "android", target_os = "ios")))]
             keys::OPTION_VIEW_STYLE => self.get_string(key, "original", vec!["adaptive"]),
-            keys::OPTION_SCROLL_STYLE => self.get_string(key, "scrollauto", vec!["scrollbar"]),
+            keys::OPTION_SCROLL_STYLE => {
+                self.get_string(key, "scrollauto", vec!["scrolledge", "scrollbar"])
+            }
             keys::OPTION_IMAGE_QUALITY => {
                 self.get_string(key, "balanced", vec!["best", "low", "custom"])
             }
@@ -1953,6 +2001,7 @@ impl UserDefaultConfig {
             keys::OPTION_CUSTOM_IMAGE_QUALITY => self.get_num_string(key, 50.0, 10.0, 0xFFF as f64),
             keys::OPTION_CUSTOM_FPS => self.get_num_string(key, 30.0, 5.0, 120.0),
             keys::OPTION_ENABLE_FILE_COPY_PASTE => self.get_string(key, "Y", vec!["", "N"]),
+            keys::OPTION_EDGE_SCROLL_EDGE_THICKNESS => self.get_num_string(key, 100, 20, 150),
             keys::OPTION_TRACKPAD_SPEED => self.get_num_string(key, 100, 10, 1000),
             _ => self
                 .get_after(key)
@@ -1968,6 +2017,9 @@ impl UserDefaultConfig {
             &DEFAULT_DISPLAY_SETTINGS,
             &value,
         ) {
+            if self.options.remove(&key).is_some() {
+                self.store();
+            }
             return;
         }
         if value.is_empty() {
@@ -2410,6 +2462,11 @@ pub fn use_ws() -> bool {
     option2bool(option, &Config::get_option(option))
 }
 
+pub fn allow_insecure_tls_fallback() -> bool {
+    let option = keys::OPTION_ALLOW_INSECURE_TLS_FALLBACK;
+    option2bool(option, &Config::get_option(option))
+}
+
 pub mod keys {
     pub const OPTION_VIEW_ONLY: &str = "view_only";
     pub const OPTION_SHOW_MONITORS_TOOLBAR: &str = "show_monitors_toolbar";
@@ -2434,6 +2491,7 @@ pub mod keys {
         "use_all_my_displays_for_the_remote_session";
     pub const OPTION_VIEW_STYLE: &str = "view_style";
     pub const OPTION_SCROLL_STYLE: &str = "scroll_style";
+    pub const OPTION_EDGE_SCROLL_EDGE_THICKNESS: &str = "edge-scroll-edge-thickness";
     pub const OPTION_IMAGE_QUALITY: &str = "image_quality";
     pub const OPTION_CUSTOM_IMAGE_QUALITY: &str = "custom_image_quality";
     pub const OPTION_CUSTOM_FPS: &str = "custom-fps";
@@ -2492,6 +2550,12 @@ pub mod keys {
     pub const OPTION_ALLOW_WEBSOCKET: &str = "allow-websocket";
     pub const OPTION_PRESET_ADDRESS_BOOK_NAME: &str = "preset-address-book-name";
     pub const OPTION_PRESET_ADDRESS_BOOK_TAG: &str = "preset-address-book-tag";
+    pub const OPTION_PRESET_ADDRESS_BOOK_ALIAS: &str = "preset-address-book-alias";
+    pub const OPTION_PRESET_ADDRESS_BOOK_PASSWORD: &str = "preset-address-book-password";
+    pub const OPTION_PRESET_ADDRESS_BOOK_NOTE: &str = "preset-address-book-note";
+    pub const OPTION_PRESET_DEVICE_USERNAME: &str = "preset-device-username";
+    pub const OPTION_PRESET_DEVICE_NAME: &str = "preset-device-name";
+    pub const OPTION_PRESET_NOTE: &str = "preset-note";
     pub const OPTION_ENABLE_DIRECTX_CAPTURE: &str = "enable-directx-capture";
     pub const OPTION_ENABLE_ANDROID_SOFTWARE_ENCODING_HALF_SCALE: &str =
         "enable-android-software-encoding-half-scale";
@@ -2499,10 +2563,17 @@ pub mod keys {
     pub const OPTION_AV1_TEST: &str = "av1-test";
     pub const OPTION_TRACKPAD_SPEED: &str = "trackpad-speed";
     pub const OPTION_REGISTER_DEVICE: &str = "register-device";
+    pub const OPTION_RELAY_SERVER: &str = "relay-server";
+    pub const OPTION_DISABLE_UDP: &str = "disable-udp";
+    pub const OPTION_ALLOW_INSECURE_TLS_FALLBACK: &str = "allow-insecure-tls-fallback";
+    pub const OPTION_SHOW_VIRTUAL_MOUSE: &str = "show-virtual-mouse";
+    // joystick is the virtual mouse.
+    // So `OPTION_SHOW_VIRTUAL_MOUSE` should also be set if `OPTION_SHOW_VIRTUAL_JOYSTICK` is set.
+    pub const OPTION_SHOW_VIRTUAL_JOYSTICK: &str = "show-virtual-joystick";
+    pub const OPTION_ENABLE_FLUTTER_HTTP_ON_RUST: &str = "enable-flutter-http-on-rust";
 
     // built-in options
     pub const OPTION_DISPLAY_NAME: &str = "display-name";
-    pub const OPTION_DISABLE_UDP: &str = "disable-udp";
     pub const OPTION_PRESET_DEVICE_GROUP_NAME: &str = "preset-device-group-name";
     pub const OPTION_PRESET_USERNAME: &str = "preset-user-name";
     pub const OPTION_PRESET_STRATEGY_NAME: &str = "preset-strategy-name";
@@ -2527,6 +2598,7 @@ pub mod keys {
     pub const OPTION_ALLOW_HTTPS_21114: &str = "allow-https-21114";
     pub const OPTION_ALLOW_HOSTNAME_AS_ID: &str = "allow-hostname-as-id";
     pub const OPTION_HIDE_POWERED_BY_ME: &str = "hide-powered-by-me";
+    pub const OPTION_MAIN_WINDOW_ALWAYS_ON_TOP: &str = "main-window-always-on-top";
 
     // flutter local options
     pub const OPTION_FLUTTER_REMOTE_MENUBAR_STATE: &str = "remoteMenubarState";
@@ -2553,6 +2625,7 @@ pub mod keys {
     pub const OPTION_KEEP_SCREEN_ON: &str = "keep-screen-on";
 
     pub const OPTION_DISABLE_GROUP_PANEL: &str = "disable-group-panel";
+    pub const OPTION_DISABLE_DISCOVERY_PANEL: &str = "disable-discovery-panel";
     pub const OPTION_PRE_ELEVATE_SERVICE: &str = "pre-elevate-service";
 
     // proxy settings
@@ -2586,6 +2659,7 @@ pub mod keys {
         OPTION_VIEW_STYLE,
         OPTION_TERMINAL_PERSISTENT,
         OPTION_SCROLL_STYLE,
+        OPTION_EDGE_SCROLL_EDGE_THICKNESS,
         OPTION_IMAGE_QUALITY,
         OPTION_CUSTOM_IMAGE_QUALITY,
         OPTION_CUSTOM_FPS,
@@ -2621,12 +2695,17 @@ pub mod keys {
         OPTION_FLOATING_WINDOW_SVG,
         OPTION_KEEP_SCREEN_ON,
         OPTION_DISABLE_GROUP_PANEL,
+        OPTION_DISABLE_DISCOVERY_PANEL,
         OPTION_PRE_ELEVATE_SERVICE,
         OPTION_ALLOW_REMOTE_CM_MODIFICATION,
         OPTION_ALLOW_AUTO_RECORD_OUTGOING,
         OPTION_VIDEO_SAVE_DIRECTORY,
         OPTION_ENABLE_UDP_PUNCH,
         OPTION_ENABLE_IPV6_PUNCH,
+        OPTION_TOUCH_MODE,
+        OPTION_SHOW_VIRTUAL_MOUSE,
+        OPTION_SHOW_VIRTUAL_JOYSTICK,
+        OPTION_ENABLE_FLUTTER_HTTP_ON_RUST,
     ];
     // DEFAULT_SETTINGS, OVERWRITE_SETTINGS
     pub const KEYS_SETTINGS: &[&str] = &[
@@ -2669,15 +2748,23 @@ pub mod keys {
         OPTION_ALLOW_WEBSOCKET,
         OPTION_PRESET_ADDRESS_BOOK_NAME,
         OPTION_PRESET_ADDRESS_BOOK_TAG,
+        OPTION_PRESET_ADDRESS_BOOK_ALIAS,
+        OPTION_PRESET_ADDRESS_BOOK_PASSWORD,
+        OPTION_PRESET_ADDRESS_BOOK_NOTE,
+        OPTION_PRESET_DEVICE_USERNAME,
+        OPTION_PRESET_DEVICE_NAME,
+        OPTION_PRESET_NOTE,
         OPTION_ENABLE_DIRECTX_CAPTURE,
         OPTION_ENABLE_ANDROID_SOFTWARE_ENCODING_HALF_SCALE,
         OPTION_ENABLE_TRUSTED_DEVICES,
+        OPTION_RELAY_SERVER,
+        OPTION_DISABLE_UDP,
+        OPTION_ALLOW_INSECURE_TLS_FALLBACK,
     ];
 
     // BUILDIN_SETTINGS
     pub const KEYS_BUILDIN_SETTINGS: &[&str] = &[
         OPTION_DISPLAY_NAME,
-        OPTION_DISABLE_UDP,
         OPTION_PRESET_DEVICE_GROUP_NAME,
         OPTION_PRESET_USERNAME,
         OPTION_PRESET_STRATEGY_NAME,
@@ -2699,6 +2786,7 @@ pub mod keys {
         OPTION_ALLOW_HOSTNAME_AS_ID,
         OPTION_REGISTER_DEVICE,
         OPTION_HIDE_POWERED_BY_ME,
+        OPTION_MAIN_WINDOW_ALWAYS_ON_TOP,
     ];
 }
 
